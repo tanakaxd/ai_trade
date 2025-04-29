@@ -15,23 +15,31 @@ import os
 SEQUENCE_LENGTH = 100
 LOOKAHEAD_PERIOD = 10
 SCALING_FACTOR = 200
-THRESHOLD = 0.2
+THRESHOLD = 0.05
 MAX_POSITION = 2.0
 TRANSACTION_COST = 0.001
 ticker = "7974.T"
 
 MODEL_DIR = 'model'
 OUTPUT_DIR = 'output'
-FILE_NAME = os.path.basename(__file__)
+MASTER_DATA_DIR = 'master_data'
+INPUT_CSV = os.path.join(MASTER_DATA_DIR, 'nikkei_combined_5min_cleaned.csv')
+FILE_NAME_RUNNING = os.path.basename(__file__)
+
+start_date = pd.to_datetime('2024-03-01')
+end_date = pd.to_datetime('2024-04-29')
 
 # Results storage
 results = []
 
 try:
     # データ取得
-    data = yf.download(ticker, interval="5m", start="2025-03-01", end="2025-04-29")
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
+    data = pd.read_csv(INPUT_CSV, parse_dates=['Datetime'])
+    data['Datetime'] = pd.to_datetime(data['Datetime'], errors='coerce')
+    data = data[(data['Datetime'] >= start_date) & (data['Datetime'] <= end_date)]
+    data = data.set_index('Datetime')
+    data = data.dropna()
+
 
     # テクニカル指標
     data['Returns'] = data['Close'].pct_change()
@@ -125,7 +133,7 @@ try:
     # プロット
     plt.figure(figsize=(10, 6))
     (1 + data['Strategy_Return'].fillna(0)).cumprod().plot(label='Strategy Cumulative Return')
-    plt.title(f'{FILE_NAME} Trading Strategy Performance')
+    plt.title(f'{FILE_NAME_RUNNING} Trading Strategy Performance')
     plt.xlabel('Date')
     plt.ylabel('Cumulative Return')
     plt.legend()
@@ -140,6 +148,6 @@ try:
     print(f"予測リターンの標準偏差: {pred_return_std:.4f}")
 
 except Exception as e:
-    print(f"Error for {ticker}, SEQUENCE_LENGTH={SEQUENCE_LENGTH}, LOOKAHEAD_PERIOD={LOOKAHEAD_PERIOD}, SCALING_FACTOR={SCALING_FACTOR}, thresh={THRESHOLD}: {e}")
+    print(f"Error for {ticker}, SEQUENCE_LENGTH={SEQUENCE_LENGTH}, LOOKAHEAD_PERIOD={LOOKAHEAD_PERIOD}, SCALING_FACTOR={SCALING_FACTOR}, thresh={THRESHOLD}: {e.with_traceback()}")
 
 print("Optimization complete. Results saved to optimization_results.csv")
