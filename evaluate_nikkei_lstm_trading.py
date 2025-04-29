@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 import pandas_ta as ta
-from tensorflow.keras.models import load_model
+from tensorflow.keras.models import load_model # type: ignore
 import pickle
 import matplotlib.pyplot as plt
 

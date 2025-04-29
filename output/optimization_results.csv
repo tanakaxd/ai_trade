@@ -1,0 +1,2 @@
+ticker,sequence_length,lookahead_period,scaling_factor,threshold,cumulative_return,sharpe_ratio,trade_count,total_cost,pred_return_std
+7974.T,100,10,200,0.2,1.3334045468969251,7.953533382068046,369,0.02280251323245466,0.0010433756458501824
