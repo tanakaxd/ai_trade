@@ -30,14 +30,14 @@ MODEL_DIR = 'model'
 OUTPUT_DIR = 'output'
 MASTER_DATA_DIR = 'master_data'
 INPUT_CSV = os.path.join(MASTER_DATA_DIR, 'nikkei_combined_5min_cleaned.csv')
-TEST_CSV = os.path.join(MASTER_DATA_DIR, 'nikkei_test_data.csv')  # テストデータ用
+TEST_CSV = os.path.join(MASTER_DATA_DIR, 'nikkei_combined_5min_cleaned.csv')  # テストデータ用
 FILE_NAME_RUNNING = os.path.basename(__file__).replace('.py', '')
 
 # 日付範囲
 TRAIN_START_DATE = pd.to_datetime('2024-01-01')
-TRAIN_END_DATE = pd.to_datetime('2024-07-01')
-TEST_START_DATE = pd.to_datetime('2024-07-01')
-TEST_END_DATE = pd.to_datetime('2024-11-01')
+TRAIN_END_DATE = pd.to_datetime('2024-11-01')
+TEST_START_DATE = pd.to_datetime('2023-01-01')
+TEST_END_DATE = pd.to_datetime('2024-01-01')
 
 def prepare_data(data):
     """データの前処理"""
@@ -167,6 +167,10 @@ def evaluate_model(model, data, scaler, features, is_test=False):
     # 戦略リターン
     data['Strategy_Return'] = data['Position_Size'] * data['Future_Return']
     data['Strategy_Return'] = data['Strategy_Return'] - TRANSACTION_COST * data['Position_Size'].diff().abs()
+
+    print(f"Strategy_Return distribution:\n{data['Strategy_Return'].describe()}")
+    trades = data[data['Position_Size'].diff().abs() > 0]
+    print(f"Trades:\n{trades[['Position_Size', 'Predicted_Return', 'Future_Return', 'Strategy_Return']]}")
     
     # 結果の評価
     cumulative_return = (1 + data['Strategy_Return'].fillna(0)).cumprod().iloc[-1]
