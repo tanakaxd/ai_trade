@@ -123,6 +123,55 @@ def analyze_time_dependent_performance(df):
     print("\n月次平均正解率:")
     print(monthly_accuracy)
 
+def analyze_threshold_based_performance(df, threshold=0.2, scaling_factor=200):
+    """閾値ベースのパフォーマンス分析"""
+    print(f"\n=== 閾値ベースのパフォーマンス分析 ===")
+    print(f"閾値: {threshold}")
+    print(f"スケーリング係数: {scaling_factor}")
+    
+    # スケーリング後の予測値
+    scaled_predictions = df['Predicted_Return'] * scaling_factor
+    
+    # 閾値以上の予測のみを抽出
+    high_confidence = df[np.abs(scaled_predictions) >= threshold]
+    print(f"閾値以上の予測数: {len(high_confidence)}")
+    print(f"全予測数に占める割合: {len(high_confidence)/len(df):.2%}")
+    
+    if len(high_confidence) > 0:
+        # 閾値以上の予測の正解率
+        high_confidence_accuracy = (high_confidence['Predicted_Direction'] == high_confidence['Actual_Direction']).mean()
+        print(f"閾値以上の予測の正解率: {high_confidence_accuracy:.4f}")
+        
+        # 閾値以上の予測のリターン分布
+        plt.figure(figsize=(10, 6))
+        sns.kdeplot(high_confidence['Predicted_Return'], label='Predicted Return')
+        sns.kdeplot(high_confidence['Future_Return'], label='Actual Return')
+        plt.title(f'Return Distributions (Threshold >= {threshold})')
+        plt.xlabel('Return')
+        plt.legend()
+        plt.savefig(os.path.join(OUTPUT_DIR, f'return_distributions_threshold_{threshold}.png'))
+        plt.close()
+        
+        # 予測値の大きさと実際のリターンの関係
+        plt.figure(figsize=(10, 6))
+        sns.scatterplot(x='Predicted_Return', y='Future_Return', data=high_confidence, alpha=0.3)
+        plt.title(f'Predicted vs Actual Returns (Threshold >= {threshold})')
+        plt.xlabel('Predicted Return')
+        plt.ylabel('Actual Return')
+        plt.savefig(os.path.join(OUTPUT_DIR, f'prediction_correlation_threshold_{threshold}.png'))
+        plt.close()
+        
+        # 予測値の大きさごとの正解率
+        bins = np.linspace(threshold/scaling_factor, df['Predicted_Return'].abs().max(), 5)
+        df['Prediction_Magnitude'] = pd.cut(df['Predicted_Return'].abs(), bins=bins, include_lowest=True)
+        magnitude_accuracy = df[df['Predicted_Return'].abs() >= threshold/scaling_factor].groupby('Prediction_Magnitude').apply(
+            lambda x: (x['Predicted_Direction'] == x['Actual_Direction']).mean()
+        )
+        print("\n予測値の大きさごとの正解率:")
+        print(magnitude_accuracy)
+    else:
+        print("閾値以上の予測が存在しません。閾値を調整してください。")
+
 def main():
     # データの読み込み
     df = load_data()
@@ -133,6 +182,9 @@ def main():
     analyze_direction_accuracy(df)
     analyze_return_distributions(df)
     analyze_time_dependent_performance(df)
+    
+    # 閾値ベースの分析
+    analyze_threshold_based_performance(df, threshold=0.2, scaling_factor=200)
     
     print("\n分析完了。結果はoutputディレクトリに保存されました。")
 
