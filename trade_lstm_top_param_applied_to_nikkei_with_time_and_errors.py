@@ -30,14 +30,14 @@ MODEL_DIR = 'model'
 OUTPUT_DIR = 'output'
 MASTER_DATA_DIR = 'master_data'
 INPUT_CSV = os.path.join(MASTER_DATA_DIR, 'nikkei_combined_5min_cleaned.csv')
-TEST_CSV = os.path.join(MASTER_DATA_DIR, 'nikkei_combined_5min_cleaned.csv')  # テストデータ用
+TEST_CSV = os.path.join(MASTER_DATA_DIR, 'NIY_F_20250303_20250430_5min.csv')  # テストデータ用
 FILE_NAME_RUNNING = os.path.basename(__file__).replace('.py', '')
 
 # 日付範囲
 TRAIN_START_DATE = pd.to_datetime('2024-01-01')
 TRAIN_END_DATE = pd.to_datetime('2024-11-01')
-TEST_START_DATE = pd.to_datetime('2023-01-01')
-TEST_END_DATE = pd.to_datetime('2024-01-01')
+TEST_START_DATE = pd.to_datetime('2025-03-03')
+TEST_END_DATE = pd.to_datetime('2025-04-30')
 
 def prepare_data(data):
     """データの前処理"""
@@ -201,6 +201,7 @@ def main():
         # データの読み込み
         print("データを読み込み中...")
         train_data = pd.read_csv(INPUT_CSV, parse_dates=['Datetime'])
+        print(train_data)
         train_data['Datetime'] = pd.to_datetime(train_data['Datetime'], errors='coerce')
         train_data = train_data[(train_data['Datetime'] >= TRAIN_START_DATE) & 
                               (train_data['Datetime'] <= TRAIN_END_DATE)]
@@ -208,6 +209,8 @@ def main():
         
         # テストデータの読み込み
         test_data = pd.read_csv(TEST_CSV, parse_dates=['Datetime'])
+        print(test_data)
+
         test_data['Datetime'] = pd.to_datetime(test_data['Datetime'], errors='coerce')
         test_data = test_data[(test_data['Datetime'] >= TEST_START_DATE) & 
                             (test_data['Datetime'] <= TEST_END_DATE)]

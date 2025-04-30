@@ -16,12 +16,12 @@ def get_tickers():
     return tickers
 
 def get_date_range():
-    """過去60日分の日付範囲を計算"""
+    """過去58日分の日付範囲を計算"""
     # 日本時間で現在時刻を取得
     jst = pytz.timezone('Asia/Tokyo')
     end_date = datetime.now(jst)
     
-    # 過去60日を計算（yfinanceの制限）
+    # 過去58日を計算（yfinanceの制限）
     start_date = end_date - timedelta(days=58)
     
     # 日付を整形
@@ -30,6 +30,20 @@ def get_date_range():
     
     print(f"データ取得期間: {start_date.strftime('%Y-%m-%d %H:%M:%S')} から {end_date.strftime('%Y-%m-%d %H:%M:%S')}")
     return start_date, end_date
+
+def convert_to_jst(df):
+    """データフレームのタイムゾーンをJSTに変換"""
+    # Datetime列がタイムゾーン情報を持っている場合
+    if pd.api.types.is_datetime64_any_dtype(df['Datetime']):
+        # UTCからJSTに変換
+        df['Datetime'] = df['Datetime'].dt.tz_convert('Asia/Tokyo')
+    else:
+        # タイムゾーン情報がない場合はJSTとして扱う
+        df['Datetime'] = pd.to_datetime(df['Datetime']).dt.tz_localize('Asia/Tokyo')
+    
+    # タイムゾーン情報を削除して文字列に変換
+    df['Datetime'] = df['Datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
+    return df
 
 def download_and_save_data(ticker, start_date, end_date):
     """指定されたtickerのデータをダウンロードして保存"""
@@ -60,6 +74,9 @@ def download_and_save_data(ticker, start_date, end_date):
         data = data.reset_index()
         data.rename(columns={'Datetime': 'Datetime'}, inplace=True)
         
+        # タイムゾーンをJSTに変換
+        data = convert_to_jst(data)
+        
         # 日付範囲をファイル名に使用
         start_str = start_date.strftime('%Y%m%d')
         end_str = end_date.strftime('%Y%m%d')
@@ -72,6 +89,7 @@ def download_and_save_data(ticker, start_date, end_date):
         data.to_csv(filepath, index=False)
         print(f"データを保存しました: {filepath}")
         print(f"データ件数: {len(data)}")
+        print(f"データ期間: {data['Datetime'].iloc[0]} から {data['Datetime'].iloc[-1]}")
         
     except Exception as e:
         print(f"エラー: {ticker} のデータ取得中にエラーが発生しました: {e}")
