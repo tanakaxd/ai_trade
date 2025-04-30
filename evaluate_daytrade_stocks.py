@@ -19,7 +19,7 @@ TRANSACTION_COST = 0.001
 MODEL_DIR = 'model'
 OUTPUT_DIR = 'output'
 MODEL_NAME = 'trade_lstm_top_param_extended_analysis'  # 前回の実行ファイル名（拡張子なし）
-TICKERS_CSV = 'daytrade_stocks.csv'
+TICKERS_CSV = 'master_data/daytrade_stocks.csv'
 
 # モデルとscalerの保存パス
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_NAME, 'lstm_model.h5')

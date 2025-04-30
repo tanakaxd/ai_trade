@@ -10,6 +10,7 @@ import pandas_ta as ta
 from itertools import product
 from tqdm import tqdm
 import os
+import joblib
 
 # Parameter grid
 SEQUENCE_LENGTH = 100
@@ -32,17 +33,28 @@ end_date = pd.to_datetime('2024-07-01')
 
 # Results storage
 results = []
-# trades = []
 
 try:
     # データ取得
+    print("データを読み込み中...")
     data = pd.read_csv(INPUT_CSV, parse_dates=['Datetime'])
     data['Datetime'] = pd.to_datetime(data['Datetime'], errors='coerce')
     data = data[(data['Datetime'] >= start_date) & (data['Datetime'] <= end_date)]
     data = data.set_index('Datetime')
     data = data.dropna()
 
+    # 時間帯特徴の追加
+    print("時間帯特徴を追加中...")
+    data['hour'] = data.index.hour
+    data['minute'] = data.index.minute
+    # 周期性を考慮して正弦・余弦変換
+    data['sin_hour'] = np.sin(2 * np.pi * data['hour'] / 24)
+    data['cos_hour'] = np.cos(2 * np.pi * data['hour'] / 24)
+    data['sin_minute'] = np.sin(2 * np.pi * data['minute'] / 60)
+    data['cos_minute'] = np.cos(2 * np.pi * data['minute'] / 60)
+
     # テクニカル指標
+    print("テクニカル指標を計算中...")
     data['Returns'] = data['Close'].pct_change()
     data['Future_Return'] = (data['Close'].shift(-LOOKAHEAD_PERIOD) - data['Close']) / data['Close']
     data['RSI'] = ta.rsi(data['Close'], length=14)
@@ -53,11 +65,17 @@ try:
     data['Sentiment_Proxy'] = data['Price_Spread'] * data['Volume']
 
     # データ準備
-    features = ['Close', 'Returns', 'RSI', 'MACD', 'BB_Upper', 'BB_Lower', 'Sentiment_Proxy']
+    features = ['Close', 'Returns', 'RSI', 'MACD', 'BB_Upper', 'BB_Lower', 'Sentiment_Proxy', 'sin_hour', 'cos_hour', 'sin_minute', 'cos_minute']
     data = data.dropna()
+    # 異常値のクリーニング
+    data[features] = data[features].replace([np.inf, -np.inf], np.nan).fillna(method='ffill').fillna(method='bfill')
+    data = data.dropna()
+
+    print("データをスケーリング中...")
     scaler = MinMaxScaler()
     scaled_data = scaler.fit_transform(data[features])
 
+    print("シーケンスを作成中...")
     X, y = [], []
     for i in range(len(scaled_data) - SEQUENCE_LENGTH - LOOKAHEAD_PERIOD):
         X.append(scaled_data[i:i + SEQUENCE_LENGTH])
@@ -70,6 +88,7 @@ try:
     y_train, y_test = y[:train_size], y[train_size:]
 
     # LSTMモデル
+    print("モデルを構築中...")
     model = Sequential([
         LSTM(64, return_sequences=True, input_shape=(SEQUENCE_LENGTH, len(features))),
         Dropout(0.2),
@@ -79,6 +98,7 @@ try:
     ])
     model.compile(optimizer='adam', loss='mse')
     early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+    print("モデルを学習中...")
     history = model.fit(
         X_train, y_train, 
         epochs=30, 
@@ -89,21 +109,78 @@ try:
     )
 
     # Plot training history
+    print("学習曲線をプロット中...")
     plt.plot(history.history['loss'], label='train_loss')
     plt.plot(history.history['val_loss'], label='val_loss')
     plt.legend()
     plt.savefig(os.path.join(OUTPUT_DIR, 'loss_plot.png'))
     plt.close()
 
-    # 予測
-    predictions = model.predict(X_test, verbose=0)
-    data['Predicted_Return'] = pd.Series(np.concatenate([np.zeros(train_size + SEQUENCE_LENGTH + LOOKAHEAD_PERIOD), predictions.flatten()]), index=data.index)
+    # モデルとscalerの保存
+    print("モデルとscalerを保存中...")
+    save_dir = os.path.join(MODEL_DIR, FILE_NAME_RUNNING)
+    os.makedirs(save_dir, exist_ok=True)
+    model.save(os.path.join(save_dir, 'lstm_model.h5'))
+    joblib.dump(scaler, os.path.join(save_dir, 'scaler.pkl'))
+    print(f"モデルを保存しました: {os.path.join(save_dir, 'lstm_model.h5')}")
+    print(f"Scalerを保存しました: {os.path.join(save_dir, 'scaler.pkl')}")
 
+    # 予測。予測自体は全データに対して行う
+    print("予測を生成中...")
+    predictions = model.predict(X, verbose=0)
+    
+    # デバッグ情報の出力
+    print("\n=== デバッグ情報 ===")
+    print(f"全データの長さ: {len(data)}")
+    print(f"予測データの長さ: {len(predictions)}")
+    print(f"SEQUENCE_LENGTH: {SEQUENCE_LENGTH}")
+    print(f"最初の予測可能日: {data.index[SEQUENCE_LENGTH]}")
+    print(f"最後の予測可能日: {data.index[SEQUENCE_LENGTH + len(predictions) - 1]}")
+    print(f"データの最初の日付: {data.index[0]}")
+    print(f"データの最後の日付: {data.index[-1]}")
+    
+    # 予測値をデータフレームに追加。SEQUENCE_LENGTH分のデータは予測できないため、その分をNaNで埋める
+    data['Predicted_Return'] = np.nan
+    data.loc[data.index[SEQUENCE_LENGTH:len(predictions)+SEQUENCE_LENGTH], 'Predicted_Return'] = predictions.flatten()
+    
+    # 予測値の分布を確認
+    print("\n予測値の分布:")
+    print(data['Predicted_Return'].describe())
+    print(f"NaNの数: {data['Predicted_Return'].isna().sum()}")
+    
     # ポジションサイジング
+    print("\nポジションサイジングを計算中...")
     data['Position_Size'] = np.clip(np.abs(data['Predicted_Return']) * SCALING_FACTOR, 0, MAX_POSITION) * np.sign(data['Predicted_Return'])
     data['Position_Size'] = np.where(np.abs(data['Position_Size']) < THRESHOLD, 0, data['Position_Size'])
+    # NaNを0に置き換える
+    data['Position_Size'] = data['Position_Size'].fillna(0)
+    
+    # ポジションサイズの分布を確認
+    print("\nポジションサイズの分布:")
+    print(data['Position_Size'].describe())
+    print(f"ポジションサイズが0でないデータ数: {(data['Position_Size'] != 0).sum()}")
+    
+    # 取引の発生を確認
+    position_changes = data['Position_Size'].diff().abs() > 0
+    print(f"\n取引の発生回数: {position_changes.sum()}")
+    print(f"最初の取引日: {data[position_changes].index[0]}")
+    print(f"最後の取引日: {data[position_changes].index[-1]}")
+    print("==================\n")
+
+    # 予測リターンと実際のリターンの乖離を計算
+    print("予測と実際のリターンの乖離を計算中...")
+    data['Prediction_Error'] = data['Predicted_Return'] - data['Future_Return']
+    error_stats = data['Prediction_Error'].describe()
+    print("Prediction Error distribution:")
+    print(error_stats)
+    # 乖離データをCSVに保存
+    data[['Predicted_Return', 'Future_Return', 'Prediction_Error']].to_csv(
+        os.path.join(OUTPUT_DIR, 'prediction_errors.csv')
+    )
+    print(f"乖離データを保存しました: {os.path.join(OUTPUT_DIR, 'prediction_errors.csv')}")
 
     # 戦略リターン
+    print("戦略リターンを計算中...")
     data['Strategy_Return'] = data['Position_Size'] * data['Future_Return']
     data['Strategy_Return'] = data['Strategy_Return'] - TRANSACTION_COST * data['Position_Size'].diff().abs()
 
@@ -112,6 +189,7 @@ try:
     print(f"Trades:\n{trades[['Position_Size', 'Predicted_Return', 'Future_Return', 'Strategy_Return']]}")
 
     # 結果評価
+    print("結果を評価中...")
     cumulative_return = (1 + data['Strategy_Return'].fillna(0)).cumprod().iloc[-1]
     sharpe_ratio = data['Strategy_Return'].mean() / data['Strategy_Return'].std() * np.sqrt(252 * 66) if data['Strategy_Return'].std() != 0 else 0
     trade_count = int(data['Position_Size'].diff().abs().gt(0).sum())
@@ -133,16 +211,17 @@ try:
     })
 
     # Save incrementally
-    pd.DataFrame(results).to_csv(os.path.join(OUTPUT_DIR,'optimization_results.csv'), index=False)
+    pd.DataFrame(results).to_csv(os.path.join(OUTPUT_DIR, 'optimization_results.csv'), index=False)
 
     # プロット
+    print("パフォーマンスをプロット中...")
     plt.figure(figsize=(10, 6))
     (1 + data['Strategy_Return'].fillna(0)).cumprod().plot(label='Strategy Cumulative Return')
     plt.title(f'{FILE_NAME_RUNNING} Trading Strategy Performance')
     plt.xlabel('Date')
     plt.ylabel('Cumulative Return')
     plt.legend()
-    plt.savefig(OUTPUT_DIR + '/strategy_performance.png')
+    plt.savefig(os.path.join(OUTPUT_DIR, 'strategy_performance.png'))
     plt.close()
     
     print("トレーディング結果:")
@@ -153,6 +232,6 @@ try:
     print(f"予測リターンの標準偏差: {pred_return_std:.4f}")
 
 except Exception as e:
-    print(f"Error for {ticker}, SEQUENCE_LENGTH={SEQUENCE_LENGTH}, LOOKAHEAD_PERIOD={LOOKAHEAD_PERIOD}, SCALING_FACTOR={SCALING_FACTOR}, thresh={THRESHOLD}: {e.with_traceback()}")
+    print(f"Error for {ticker}, SEQUENCE_LENGTH={SEQUENCE_LENGTH}, LOOKAHEAD_PERIOD={LOOKAHEAD_PERIOD}, SCALING_FACTOR={SCALING_FACTOR}, thresh={THRESHOLD}: {e}")
 
 print("Optimization complete. Results saved to optimization_results.csv")
