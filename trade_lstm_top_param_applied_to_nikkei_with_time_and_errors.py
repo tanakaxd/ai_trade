@@ -30,7 +30,7 @@ MODEL_DIR = 'model'
 OUTPUT_DIR = 'output'
 MASTER_DATA_DIR = 'master_data'
 INPUT_CSV = os.path.join(MASTER_DATA_DIR, 'nikkei_combined_5min_cleaned.csv')
-TEST_CSV = os.path.join(MASTER_DATA_DIR, 'NIY_F_20250303_20250430_5min.csv')  # テストデータ用
+TEST_CSV = os.path.join(MASTER_DATA_DIR, '9432.T_20250303_20250430_5min.csv')  # テストデータ用
 FILE_NAME_RUNNING = os.path.basename(__file__).replace('.py', '')
 
 # 日付範囲
@@ -42,6 +42,10 @@ TEST_END_DATE = pd.to_datetime('2025-04-30')
 def prepare_data(data):
     """データの前処理"""
     print("時間帯特徴を追加中...")
+    # データフレームのコピーを作成
+    data = data.copy()
+    
+    # 時間帯特徴の追加
     data['hour'] = data.index.hour
     data['minute'] = data.index.minute
     data['sin_hour'] = np.sin(2 * np.pi * data['hour'] / 24)
@@ -50,6 +54,7 @@ def prepare_data(data):
     data['cos_minute'] = np.cos(2 * np.pi * data['minute'] / 60)
 
     print("テクニカル指標を計算中...")
+    # テクニカル指標の計算
     data['Returns'] = data['Close'].pct_change()
     data['Future_Return'] = (data['Close'].shift(-LOOKAHEAD_PERIOD) - data['Close']) / data['Close']
     data['RSI'] = ta.rsi(data['Close'], length=14)
@@ -62,6 +67,7 @@ def prepare_data(data):
     features = ['Close', 'Returns', 'RSI', 'MACD', 'BB_Upper', 'BB_Lower', 
                'Sentiment_Proxy', 'sin_hour', 'cos_hour', 'sin_minute', 'cos_minute']
     
+    # 欠損値の処理
     data = data.dropna()
     data[features] = data[features].replace([np.inf, -np.inf], np.nan).fillna(method='ffill').fillna(method='bfill')
     data = data.dropna()
@@ -146,6 +152,9 @@ def load_model_and_scaler():
 def evaluate_model(model, data, scaler, features, is_test=False):
     """モデルの評価"""
     print("予測を生成中...")
+    # データフレームのコピーを作成
+    data = data.copy()
+    
     scaled_data = scaler.transform(data[features])
     
     X = []
@@ -201,7 +210,6 @@ def main():
         # データの読み込み
         print("データを読み込み中...")
         train_data = pd.read_csv(INPUT_CSV, parse_dates=['Datetime'])
-        print(train_data)
         train_data['Datetime'] = pd.to_datetime(train_data['Datetime'], errors='coerce')
         train_data = train_data[(train_data['Datetime'] >= TRAIN_START_DATE) & 
                               (train_data['Datetime'] <= TRAIN_END_DATE)]
@@ -209,8 +217,6 @@ def main():
         
         # テストデータの読み込み
         test_data = pd.read_csv(TEST_CSV, parse_dates=['Datetime'])
-        print(test_data)
-
         test_data['Datetime'] = pd.to_datetime(test_data['Datetime'], errors='coerce')
         test_data = test_data[(test_data['Datetime'] >= TEST_START_DATE) & 
                             (test_data['Datetime'] <= TEST_END_DATE)]
