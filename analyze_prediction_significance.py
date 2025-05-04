@@ -14,7 +14,7 @@ plt.rcParams['font.family'] = 'MS Gothic'  # Windows用
 
 # 設定
 OUTPUT_DIR = 'output'
-PREDICTION_ERRORS_FILE = os.path.join(OUTPUT_DIR, 'prediction_errors.csv')
+PREDICTION_ERRORS_FILE = os.path.join(OUTPUT_DIR, 'test_prediction_results_v2.csv')
 
 def load_data():
     """データの読み込み"""
