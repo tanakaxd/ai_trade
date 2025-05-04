@@ -1,2 +1,0 @@
-ticker,sequence_length,lookahead_period,scaling_factor,threshold,cumulative_return,sharpe_ratio,trade_count,total_cost,pred_return_std
-Nikkei225,100,10,200,0.2,6.973090591403738,3.5897786603692525,3935,0.35709408060275016,0.0011973487117227398
