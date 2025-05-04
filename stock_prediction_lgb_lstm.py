@@ -13,29 +13,19 @@ import seaborn as sns
 from datetime import datetime
 import os
 import joblib
-import requests
+import yfinance as yf
 import shap
-
-# 環境変数からFMP APIキーを取得
-FMP_API_KEY = os.getenv("FMP_API_KEY")
-if not FMP_API_KEY:
-    raise ValueError("FMP_API_KEY environment variable not set")
 
 # ディレクトリ作成
 os.makedirs("model/LightGBM_20250504", exist_ok=True)
 os.makedirs("model/LSTM_20250504", exist_ok=True)
 os.makedirs("output", exist_ok=True)
 
-# データ取得（FMP API）
+# データ取得（yfinance）
 ticker = "7203.T"
-url = f"https://financialmodelingprep.com/api/v3/historical-chart/5min/{ticker}?apikey={FMP_API_KEY}"
-response = requests.get(url)
-data = pd.DataFrame(response.json())
-data["date"] = pd.to_datetime(data["date"])
-data.set_index("date", inplace=True)
-data = data[["open", "high", "low", "close", "volume"]].rename(columns={
-    "open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"
-})
+data = yf.Ticker(ticker).history(period="60d", interval="5m")
+data = data[["Open", "High", "Low", "Close", "Volume"]]
+data.index = pd.to_datetime(data.index)
 data = data.sort_index()
 
 # 特徴量生成
@@ -47,7 +37,8 @@ for lag in [1, 5, 10]:
     lag_features[f"Close_lag_{lag}"] = data["Close"].shift(lag)
     lag_features[f"Volume_lag_{lag}"] = data["Volume"].shift(lag)
     lag_features[f"Close_pct_change_{lag}"] = data["Close"].pct_change(periods=lag)
-data = pd.concat([data, pd.DataFrame(lag_features, index=data.index)], axis=1)
+lag_df = pd.DataFrame(lag_features, index=data.index)
+data = pd.concat([data, lag_df], axis=1)
 
 # 統計量
 stat_features = {}
@@ -55,7 +46,8 @@ for window in [5, 10, 20]:
     stat_features[f"Close_mean_{window}"] = data["Close"].rolling(window=window).mean()
     stat_features[f"Close_std_{window}"] = data["Close"].rolling(window=window).std()
     stat_features[f"Volume_mean_{window}"] = data["Volume"].rolling(window=window).mean()
-data = pd.concat([data, pd.DataFrame(stat_features, index=data.index)], axis=1)
+stat_df = pd.DataFrame(stat_features, index=data.index)
+data = pd.concat([data, stat_df], axis=1)
 
 # 寄り/引け特徴量
 open_close_features = {
@@ -66,29 +58,32 @@ open_close_features = {
     "Close_to_vwap": data["Close"] - data["volume_vwap"],
     "Close_volatility": data["Close"].rolling(window=5).std()
 }
-data = pd.concat([data, pd.DataFrame(open_close_features, index=data.index)], axis=1)
+open_close_df = pd.DataFrame(open_close_features, index=data.index)
+data = pd.concat([data, open_close_df], axis=1)
 
 # 特徴量合成
 synth_features = {
-    "Close_lag_1_plus_Volume_lag_1": data["Close_lag_1"] + data["Volume_lag_1"],
-    "Close_lag_1_div_Volume_lag_1": data["Close_lag_1"] / data["Volume_lag_1"].replace(0, np.nan),
-    "RSI_minus_MACD": data["momentum_rsi"] - data["trend_macd"],
-    "Close_mean_5_plus_BBW": data["Close_mean_5"] + data["volatility_bbw"],
-    "Close_lag_5_div_SMA5": data["Close_lag_5"] / data["trend_sma_fast"].replace(0, np.nan),
-    "Close_lag_1_times_Volume_lag_1": data["Close_lag_1"] * data["Volume_lag_1"]  # クロス乗算（オプション）
+    "Close_lag_1_plus_Volume_lag_1": np.clip(data["Close_lag_1"] + data["Volume_lag_1"], -1e6, 1e6),
+    "Close_lag_1_div_Volume_lag_1": np.clip(data["Close_lag_1"] / data["Volume_lag_1"].replace(0, np.nan), -1e6, 1e6),
+    "RSI_minus_MACD": np.clip(data["momentum_rsi"] - data["trend_macd"], -1e6, 1e6),
+    "Close_mean_5_plus_BBW": np.clip(data["Close_mean_5"] + data["volatility_bbw"], -1e6, 1e6),
+    "Close_lag_5_div_SMA5": np.clip(data["Close_lag_5"] / data["trend_sma_fast"].replace(0, np.nan), -1e6, 1e6),
+    "Close_lag_1_times_Volume_lag_1": np.clip(data["Close_lag_1"] * data["Volume_lag_1"], -1e6, 1e6)
 }
-data = pd.concat([data, pd.DataFrame(synth_features, index=data.index)], axis=1)
+synth_df = pd.DataFrame(synth_features, index=data.index)
+data = pd.concat([data, synth_df], axis=1)
 
 # 乖離/インバランス
 imbalance_features = {
     "Close_Open_diff": data["Close"] - data["Open"],
     "High_Low_diff": data["High"] - data["Low"],
     "Close_SMA5_diff": data["Close"] - data["trend_sma_fast"],
-    "Buy_Sell_Imbalance": (data["Close"] - data["Open"]) / (data["High"] - data["Low"]).replace(0, np.nan),
-    "Volume_Imbalance": data["Volume"] / data["Volume_mean_5"],
-    "RSI_MACD_Imbalance": data["momentum_rsi"] / data["trend_macd"].replace(0, np.nan)
+    "Buy_Sell_Imbalance": np.clip((data["Close"] - data["Open"]) / (data["High"] - data["Low"]).replace(0, np.nan), -1e6, 1e6),
+    "Volume_Imbalance": np.clip(data["Volume"] / data["Volume_mean_5"], -1e6, 1e6),
+    "RSI_MACD_Imbalance": np.clip(data["momentum_rsi"] / data["trend_macd"].replace(0, np.nan), -1e6, 1e6)
 }
-data = pd.concat([data, pd.DataFrame(imbalance_features, index=data.index)], axis=1)
+imbalance_df = pd.DataFrame(imbalance_features, index=data.index)
+data = pd.concat([data, imbalance_df], axis=1)
 
 # カテゴリカル変数
 cat_features = {
@@ -97,10 +92,15 @@ cat_features = {
     "is_opening": ((data.index.hour == 9) & (data.index.minute <= 30)).astype(int),
     "is_closing": ((data.index.hour == 14) & (data.index.minute >= 30)).astype(int)
 }
-data = pd.concat([data, pd.DataFrame(cat_features, index=data.index)], axis=1)
+cat_df = pd.DataFrame(cat_features, index=data.index)
+data = pd.concat([data, cat_df], axis=1)
 
 # センチメント（ダミー）
 data["sentiment"] = np.random.uniform(-1, 1, len(data))
+
+# 無限大チェック
+print("Infinite values in data:", np.isinf(data).sum().sum())
+data = data.replace([np.inf, -np.inf], np.nan).fillna(0)
 
 # 特徴量リスト
 columns_to_drop = ["Close", "Open", "High", "Low", "Volume"]
@@ -115,13 +115,18 @@ X = data[features].loc[y.index].fillna(0)
 
 # 特徴量の正規化
 scaler = StandardScaler()
+index = X.index
+columns = X.columns
+X = np.clip(X, -1e6, 1e6)
+X = np.nan_to_num(X, nan=0, posinf=1e6, neginf=-1e6)
 X_scaled = scaler.fit_transform(X)
-X = pd.DataFrame(X_scaled, index=X.index, columns=X.columns)
+X = pd.DataFrame(X_scaled, index=index, columns=columns)
 
 # カテゴリカル変数の処理（LSTM用）
 X_lstm = pd.get_dummies(X, columns=["hour", "day_of_week", "is_opening", "is_closing"], drop_first=True)
+columns_lstm = X_lstm.columns
 X_lstm = np.nan_to_num(X_lstm, nan=0, posinf=1e6, neginf=-1e6)
-features_lstm = X_lstm.columns
+features_lstm = columns_lstm
 
 # k-Fold Cross Validation
 tscv = TimeSeriesSplit(n_splits=5)
@@ -174,7 +179,7 @@ def create_lstm_model(input_shape):
 
 # LSTM用データ準備
 timesteps = 10
-X_lstm_3d = np.array([X_lstm.iloc[i-timesteps:i].values for i in range(timesteps, len(X_lstm))])
+X_lstm_3d = np.array([X_lstm[i-timesteps:i] for i in range(timesteps, len(X_lstm))])
 y_lstm = y.iloc[timesteps:]
 X_lstm_3d = np.nan_to_num(X_lstm_3d, nan=0, posinf=1e6, neginf=-1e6)
 lstm_metrics = []
