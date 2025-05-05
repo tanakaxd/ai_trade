@@ -8,6 +8,7 @@ from sklearn.preprocessing import StandardScaler
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import TensorBoard
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
@@ -20,6 +21,7 @@ import shap
 os.makedirs("model/LightGBM_20250504", exist_ok=True)
 os.makedirs("model/LSTM_20250504", exist_ok=True)
 os.makedirs("output", exist_ok=True)
+os.makedirs("logs", exist_ok=True)
 
 # データ取得（yfinance）
 ticker = "7203.T"
@@ -30,6 +32,9 @@ data = data.sort_index()
 
 # 特徴量生成
 data = add_all_ta_features(data, open="Open", high="High", low="Low", close="Close", volume="Volume")
+print("Infinite values after TA:", np.isinf(data).sum().sum())
+print("Columns with inf:", np.isinf(data).sum()[np.isinf(data).sum() > 0])
+data = data.replace([np.inf, -np.inf], np.nan).fillna(0)
 
 # ラグ特徴量
 lag_features = {}
@@ -39,6 +44,9 @@ for lag in [1, 5, 10]:
     lag_features[f"Close_pct_change_{lag}"] = data["Close"].pct_change(periods=lag)
 lag_df = pd.DataFrame(lag_features, index=data.index)
 data = pd.concat([data, lag_df], axis=1)
+print("Infinite values after lag:", np.isinf(data).sum().sum())
+print("Columns with inf:", np.isinf(data).sum()[np.isinf(data).sum() > 0])
+data = data.replace([np.inf, -np.inf], np.nan).fillna(0)
 
 # 統計量
 stat_features = {}
@@ -48,6 +56,9 @@ for window in [5, 10, 20]:
     stat_features[f"Volume_mean_{window}"] = data["Volume"].rolling(window=window).mean()
 stat_df = pd.DataFrame(stat_features, index=data.index)
 data = pd.concat([data, stat_df], axis=1)
+print("Infinite values after stats:", np.isinf(data).sum().sum())
+print("Columns with inf:", np.isinf(data).sum()[np.isinf(data).sum() > 0])
+data = data.replace([np.inf, -np.inf], np.nan).fillna(0)
 
 # 寄り/引け特徴量
 open_close_features = {
@@ -60,6 +71,9 @@ open_close_features = {
 }
 open_close_df = pd.DataFrame(open_close_features, index=data.index)
 data = pd.concat([data, open_close_df], axis=1)
+print("Infinite values after open/close:", np.isinf(data).sum().sum())
+print("Columns with inf:", np.isinf(data).sum()[np.isinf(data).sum() > 0])
+data = data.replace([np.inf, -np.inf], np.nan).fillna(0)
 
 # 特徴量合成
 synth_features = {
@@ -72,6 +86,9 @@ synth_features = {
 }
 synth_df = pd.DataFrame(synth_features, index=data.index)
 data = pd.concat([data, synth_df], axis=1)
+print("Infinite values after synth:", np.isinf(data).sum().sum())
+print("Columns with inf:", np.isinf(data).sum()[np.isinf(data).sum() > 0])
+data = data.replace([np.inf, -np.inf], np.nan).fillna(0)
 
 # 乖離/インバランス
 imbalance_features = {
@@ -84,6 +101,9 @@ imbalance_features = {
 }
 imbalance_df = pd.DataFrame(imbalance_features, index=data.index)
 data = pd.concat([data, imbalance_df], axis=1)
+print("Infinite values after imbalance:", np.isinf(data).sum().sum())
+print("Columns with inf:", np.isinf(data).sum()[np.isinf(data).sum() > 0])
+data = data.replace([np.inf, -np.inf], np.nan).fillna(0)
 
 # カテゴリカル変数
 cat_features = {
@@ -94,12 +114,16 @@ cat_features = {
 }
 cat_df = pd.DataFrame(cat_features, index=data.index)
 data = pd.concat([data, cat_df], axis=1)
+print("Infinite values after categorical:", np.isinf(data).sum().sum())
+print("Columns with inf:", np.isinf(data).sum()[np.isinf(data).sum() > 0])
+data = data.replace([np.inf, -np.inf], np.nan).fillna(0)
 
 # センチメント（ダミー）
 data["sentiment"] = np.random.uniform(-1, 1, len(data))
 
 # 無限大チェック
 print("Infinite values in data:", np.isinf(data).sum().sum())
+print("Columns with inf:", np.isinf(data).sum()[np.isinf(data).sum() > 0])
 data = data.replace([np.inf, -np.inf], np.nan).fillna(0)
 
 # 特徴量リスト
@@ -113,17 +137,33 @@ y = pd.DataFrame({
 }).dropna()
 X = data[features].loc[y.index].fillna(0)
 
-# 特徴量の正規化
-scaler = StandardScaler()
-index = X.index
-columns = X.columns
-X = np.clip(X, -1e6, 1e6)
-X = np.nan_to_num(X, nan=0, posinf=1e6, neginf=-1e6)
-X_scaled = scaler.fit_transform(X)
-X = pd.DataFrame(X_scaled, index=index, columns=columns)
+# カテゴリカル特徴量を分離
+cat_columns = ["hour", "day_of_week", "is_opening", "is_closing"]
+X_cat = X[cat_columns]
+X_num = X.drop(columns=cat_columns)
+
+# 特徴量の正規化（数値特徴量のみ）
+scaler_X = StandardScaler()
+index = X_num.index
+columns = X_num.columns
+X_num = np.clip(X_num, -1e6, 1e6)
+X_num = np.nan_to_num(X_num, nan=0, posinf=1e6, neginf=-1e6)
+X_num_scaled = scaler_X.fit_transform(X_num)
+X_num = pd.DataFrame(X_num_scaled, index=index, columns=columns)
+
+# カテゴリカル特徴量を結合
+X = pd.concat([X_num, X_cat], axis=1)
+
+# ターゲットの正規化（列ごとに）
+scalers_y = {k: StandardScaler() for k in range(1, 6)}
+y_scaled = y.copy()
+for k in range(1, 6):
+    col = f"Close_i+{k}"
+    y_scaled[col] = scalers_y[k].fit_transform(y[[col]])
+y = y_scaled
 
 # カテゴリカル変数の処理（LSTM用）
-X_lstm = pd.get_dummies(X, columns=["hour", "day_of_week", "is_opening", "is_closing"], drop_first=True)
+X_lstm = pd.get_dummies(X, columns=cat_columns, drop_first=True)
 columns_lstm = X_lstm.columns
 X_lstm = np.nan_to_num(X_lstm, nan=0, posinf=1e6, neginf=-1e6)
 features_lstm = columns_lstm
@@ -138,7 +178,7 @@ for k in range(1, 6):
     for train_idx, test_idx in tscv.split(X):
         X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
         y_train, y_test = y[f"Close_i+{k}"].iloc[train_idx], y[f"Close_i+{k}"].iloc[test_idx]
-        train_data = lgb.Dataset(X_train, label=y_train, categorical_feature=["hour", "day_of_week", "is_opening", "is_closing"])
+        train_data = lgb.Dataset(X_train, label=y_train, categorical_feature=cat_columns)
         test_data = lgb.Dataset(X_test, label=y_test, reference=train_data)
         params = {
             "objective": "regression",
@@ -149,12 +189,15 @@ for k in range(1, 6):
             "random_state": 42,
             "verbose": -1
         }
-        model = lgb.train(params, train_data, valid_sets=[test_data], callbacks=[lgb.early_stopping(100, verbose=False)])
+        model = lgb.train(params, train_data, valid_sets=[test_data], callbacks=[lgb.early_stopping(100, verbose=True)])
         joblib.dump(model, f"model/LightGBM_20250504/model_i+{k}.joblib")
         y_pred = model.predict(X_test)
         y_pred = np.nan_to_num(y_pred, nan=0, posinf=1e6, neginf=-1e6)
-        rmses.append(mean_squared_error(y_test, y_pred, squared=False))
-        maes.append(mean_absolute_error(y_test, y_pred))
+        # 逆正規化して評価
+        y_test_orig = scalers_y[k].inverse_transform(y_test.values.reshape(-1, 1)).flatten()
+        y_pred_orig = scalers_y[k].inverse_transform(y_pred.reshape(-1, 1)).flatten()
+        rmses.append(mean_squared_error(y_test_orig, y_pred_orig, squared=False))
+        maes.append(mean_absolute_error(y_test_orig, y_pred_orig))
         if k == 1:  # 特徴量重要度（1回のみ）
             importances = model.feature_importance(importance_type="gain")
             feature_importance_df = pd.DataFrame({"feature": X.columns, "importance": importances}).sort_values(by="importance", ascending=False)
@@ -190,12 +233,17 @@ for k in range(1, 6):
         X_train, X_test = X_lstm_3d[train_idx], X_lstm_3d[test_idx]
         y_train, y_test = y_lstm[f"Close_i+{k}"].iloc[train_idx], y_lstm[f"Close_i+{k}"].iloc[test_idx]
         model = create_lstm_model((timesteps, len(features_lstm)))
-        model.fit(X_train, y_train, epochs=10, batch_size=32, verbose=0)
+        log_dir = f"logs/lstm_i+{k}_{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        tensorboard_callback = TensorBoard(log_dir=log_dir, histogram_freq=1)
+        model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=1, callbacks=[tensorboard_callback])
         model.save(f"model/LSTM_20250504/model_i+{k}.h5")
         y_pred = model.predict(X_test, verbose=0).flatten()
         y_pred = np.nan_to_num(y_pred, nan=0, posinf=1e6, neginf=-1e6)
-        rmses.append(mean_squared_error(y_test, y_pred, squared=False))
-        maes.append(mean_absolute_error(y_test, y_pred))
+        # 逆正規化して評価
+        y_test_orig = scalers_y[k].inverse_transform(y_test.values.reshape(-1, 1)).flatten()
+        y_pred_orig = scalers_y[k].inverse_transform(y_pred.reshape(-1, 1)).flatten()
+        rmses.append(mean_squared_error(y_test_orig, y_pred_orig, squared=False))
+        maes.append(mean_absolute_error(y_test_orig, y_pred_orig))
     lstm_metrics.append({"Model": f"LSTM_i+{k}", "RMSE": np.mean(rmses), "MAE": np.mean(maes)})
 
 # メトリクス保存
@@ -208,15 +256,18 @@ for k in range(1, 6):
     lgb_model = joblib.load(f"model/LightGBM_20250504/model_i+{k}.joblib")
     y_pred_lgb = lgb_model.predict(X)
     y_pred_lgb = np.nan_to_num(y_pred_lgb, nan=0, posinf=1e6, neginf=-1e6)
+    y_pred_lgb_orig = scalers_y[k].inverse_transform(y_pred_lgb.reshape(-1, 1)).flatten()
     # LSTM予測
     lstm_model = tf.keras.models.load_model(f"model/LSTM_20250504/model_i+{k}.h5")
     y_pred_lstm = lstm_model.predict(X_lstm_3d, verbose=0).flatten()
     y_pred_lstm = np.nan_to_num(y_pred_lstm, nan=0, posinf=1e6, neginf=-1e6)
+    y_pred_lstm_orig = scalers_y[k].inverse_transform(y_pred_lstm.reshape(-1, 1)).flatten()
     # 時系列プロット
+    y_orig = scalers_y[k].inverse_transform(y[f"Close_i+{k}"].values.reshape(-1, 1)).flatten()
     plt.figure(figsize=(12, 6))
-    plt.plot(y.index[-100:], y[f"Close_i+{k}"][-100:], label="Actual", color="blue")
-    plt.plot(y.index[-100:], y_pred_lgb[-100:], label="LightGBM", color="red", linestyle="--")
-    plt.plot(y.index[-100:], y_pred_lstm[-100:], label="LSTM", color="green", linestyle="-.")
+    plt.plot(y.index[-100:], y_orig[-100:], label="Actual", color="blue")
+    plt.plot(y.index[-100:], y_pred_lgb_orig[-100:], label="LightGBM", color="red", linestyle="--")
+    plt.plot(y.index[-100:], y_pred_lstm_orig[-100:], label="LSTM", color="green", linestyle="-.")
     plt.title(f"Prediction for Close_i+{k}")
     plt.xlabel("Date")
     plt.ylabel("Close Price (JPY)")
@@ -225,8 +276,8 @@ for k in range(1, 6):
     plt.savefig(f"output/timeseries_i+{k}.png")
     plt.close()
     # 誤差分布
-    errors_lgb = y[f"Close_i+{k}"][-100:] - y_pred_lgb[-100:]
-    errors_lstm = y[f"Close_i+{k}"][-100:] - y_pred_lstm[-100:]
+    errors_lgb = y_orig[-100:] - y_pred_lgb_orig[-100:]
+    errors_lstm = y_orig[-100:] - y_pred_lstm_orig[-100:]
     plt.figure(figsize=(8, 6))
     sns.histplot(errors_lgb, bins=50, kde=True, color="purple", label="LightGBM")
     sns.histplot(errors_lstm, bins=50, kde=True, color="green", label="LSTM", alpha=0.5)
