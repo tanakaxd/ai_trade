@@ -27,7 +27,8 @@ for k in range(5):
     y_orig[:, k] = scalers_y[k+1].inverse_transform(y_lstm[:, k].reshape(-1, 1)).flatten()
 
 # モデル評価と可視化
-lstm_model = tf.keras.models.load_model("model/LSTM_20250504/model_multi.h5")
+# 最後のフォールド（フォールド5）のLSTMモデルを使用
+lstm_model = tf.keras.models.load_model("model/LSTM_20250504/model_multi_fold_5.h5")
 y_pred_lstm = lstm_model.predict(X_lstm_3d, verbose=0)
 y_pred_lstm_orig = np.zeros((y_pred_lstm.shape[0], 5))
 for k in range(5):

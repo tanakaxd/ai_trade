@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from ta import add_all_ta_features
+from sklearn.preprocessing import StandardScaler
 import os
 import yfinance as yf
 
@@ -10,9 +11,16 @@ os.makedirs("data", exist_ok=True)
 # データ取得（yfinance）
 ticker = "7203.T"
 data = yf.Ticker(ticker).history(period="60d", interval="5m")
+print(data)
 data = data[["Open", "High", "Low", "Close", "Volume"]]
+print(data)
+
 data.index = pd.to_datetime(data.index)
+print(data)
+
 data = data.sort_index()
+print(data)
+
 
 # 特徴量生成
 data = add_all_ta_features(data, open="Open", high="High", low="Low", close="Close", volume="Volume")
@@ -27,8 +35,6 @@ for lag in [1, 5, 10]:
     lag_features[f"Volume_lag_{lag}"] = data["Volume"].shift(lag)
     lag_features[f"Close_pct_change_{lag}"] = data["Close"].pct_change(periods=lag)
 lag_df = pd.DataFrame(lag_features, index=data.index)
-data = pd.concat([data, lag_df], axis=1)
-data = data.replace([np.inf, -np.inf], np.nan).fillna(data.mean())
 
 # 統計量
 stat_features = {}
@@ -37,10 +43,11 @@ for window in [5, 10, 20]:
     stat_features[f"Close_std_{window}"] = data["Close"].rolling(window=window).std()
     stat_features[f"Volume_mean_{window}"] = data["Volume"].rolling(window=window).mean()
 stat_df = pd.DataFrame(stat_features, index=data.index)
-data = pd.concat([data, stat_df], axis=1)
+
+# 寄り/引け特徴量（先にラグ特徴量や統計量が必要なものを計算）
+data = pd.concat([data, lag_df, stat_df], axis=1)  # ここで結合
 data = data.replace([np.inf, -np.inf], np.nan).fillna(data.mean())
 
-# 寄り/引け特徴量
 open_close_features = {
     "Open_to_prev_close": data["Open"] - data["Close"].shift(1),
     "Open_to_sma5": data["Open"] - data["trend_sma_fast"],
@@ -50,10 +57,8 @@ open_close_features = {
     "Close_volatility": data["Close"].rolling(window=5).std()
 }
 open_close_df = pd.DataFrame(open_close_features, index=data.index)
-data = pd.concat([data, open_close_df], axis=1)
-data = data.replace([np.inf, -np.inf], np.nan).fillna(data.mean())
 
-# 特徴量合成
+# 特徴量合成（先にラグ特徴量が必要）
 synth_features = {
     "Close_lag_1_plus_Volume_lag_1": np.clip(data["Close_lag_1"] + data["Volume_lag_1"], -1e6, 1e6),
     "Close_lag_1_div_Volume_lag_1": np.clip(data["Close_lag_1"] / data["Volume_lag_1"].replace(0, np.nan), -1e6, 1e6),
@@ -63,8 +68,6 @@ synth_features = {
     "Close_lag_1_times_Volume_lag_1": np.clip(data["Close_lag_1"] * data["Volume_lag_1"], -1e6, 1e6)
 }
 synth_df = pd.DataFrame(synth_features, index=data.index)
-data = pd.concat([data, synth_df], axis=1)
-data = data.replace([np.inf, -np.inf], np.nan).fillna(data.mean())
 
 # 乖離/インバランス
 imbalance_features = {
@@ -76,8 +79,6 @@ imbalance_features = {
     "RSI_MACD_Imbalance": np.clip(data["momentum_rsi"] / data["trend_macd"].replace(0, np.nan), -1e6, 1e6)
 }
 imbalance_df = pd.DataFrame(imbalance_features, index=data.index)
-data = pd.concat([data, imbalance_df], axis=1)
-data = data.replace([np.inf, -np.inf], np.nan).fillna(data.mean())
 
 # カテゴリカル変数
 cat_features = {
@@ -87,16 +88,23 @@ cat_features = {
     "is_closing": ((data.index.hour == 14) & (data.index.minute >= 30)).astype(int)
 }
 cat_df = pd.DataFrame(cat_features, index=data.index)
-data = pd.concat([data, cat_df], axis=1)
-data = data.replace([np.inf, -np.inf], np.nan).fillna(data.mean())
 
 # センチメント（ダミー）
-data["sentiment"] = np.random.uniform(-1, 1, len(data))
+sentiment = pd.Series(np.random.uniform(-1, 1, len(data)), index=data.index, name="sentiment")
+
+# 全ての特徴量を一度に結合
+data = pd.concat([data, open_close_df, synth_df, imbalance_df, cat_df, sentiment], axis=1)
+data = data.replace([np.inf, -np.inf], np.nan).fillna(data.mean())
 
 # 無限大チェック
 print("Infinite values in data:", np.isinf(data).sum().sum())
 print("Columns with inf:", np.isinf(data).sum()[np.isinf(data).sum() > 0])
 data = data.replace([np.inf, -np.inf], np.nan).fillna(data.mean())
+
+# 特徴量リスト
+columns_to_drop = ["Close", "Open", "High", "Low", "Volume"]
+features = data.drop(columns=[col for col in columns_to_drop if col in data.columns]).columns
+print(f"Total features: {len(features)}")
 
 # ターゲット（i+1～i+5の終値）
 y = pd.DataFrame({
@@ -134,11 +142,6 @@ X_lstm = pd.get_dummies(X, columns=cat_columns, drop_first=True)
 columns_lstm = X_lstm.columns
 X_lstm = np.nan_to_num(X_lstm, nan=0, posinf=1e6, neginf=-1e6)
 features_lstm = columns_lstm
-
-# 特徴量リスト
-columns_to_drop = ["Close", "Open", "High", "Low", "Volume"]
-features = data.drop(columns=[col for col in columns_to_drop if col in data.columns]).columns
-print(f"Total features: {len(features)}")
 
 # データ保存
 data_dict = {

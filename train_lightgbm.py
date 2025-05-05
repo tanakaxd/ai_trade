@@ -6,6 +6,10 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 import os
 import joblib
 
+# ディレクトリ作成
+os.makedirs("output", exist_ok=True)
+os.makedirs("model/LightGBM_20250504", exist_ok=True)
+
 # データ読み込み
 data_dict = pd.read_pickle("data/processed_data.pkl")
 X = data_dict["X"]
@@ -13,9 +17,6 @@ y = data_dict["y"]
 scalers_y = data_dict["scalers_y"]
 cat_columns = ["hour", "day_of_week", "is_opening", "is_closing"]
 features = data_dict["features"]
-
-# ディレクトリ作成
-os.makedirs("model/LightGBM_20250504", exist_ok=True)
 
 # k-Fold Cross Validation
 tscv = TimeSeriesSplit(n_splits=5)
