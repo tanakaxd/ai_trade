@@ -9,8 +9,8 @@ import yfinance as yf
 os.makedirs("data", exist_ok=True)
 
 # データ取得（yfinance）
-ticker = "7203.T"
-data = yf.Ticker(ticker).history(period="60d", interval="5m")
+ticker = "9432.T"
+data = yf.Ticker(ticker).history(period="30y", interval="1d", auto_adjust=False)
 print(data)
 data = data[["Open", "High", "Low", "Close", "Volume"]]
 print(data)
