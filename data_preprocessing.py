@@ -4,28 +4,41 @@ from ta import add_all_ta_features
 from sklearn.preprocessing import StandardScaler
 import os
 import yfinance as yf
+import time
+from yfinance.exceptions import YFRateLimitError
 
 # ディレクトリ作成
 os.makedirs("data", exist_ok=True)
 
 # データ取得（yfinance）
+def fetch_yfinance_data(ticker, period="30y", interval="1d", auto_adjust=True, retries=3, wait_time=5):
+    for attempt in range(retries):
+        try:
+            data = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=auto_adjust)
+            if data.empty:
+                raise ValueError(f"No data retrieved for ticker {ticker}")
+            return data
+        except YFRateLimitError:
+            if attempt < retries - 1:
+                print(f"Rate limit exceeded. Retrying in {wait_time} seconds... (Attempt {attempt + 1}/{retries})")
+                time.sleep(wait_time)
+            else:
+                raise Exception(f"Failed to fetch data for {ticker} after {retries} attempts due to rate limiting.")
+        except Exception as e:
+            if attempt < retries - 1:
+                print(f"Error fetching data: {e}. Retrying in {wait_time} seconds... (Attempt {attempt + 1}/{retries})")
+                time.sleep(wait_time)
+            else:
+                raise Exception(f"Failed to fetch data for {ticker} after {retries} attempts: {e}")
+
 ticker = "9432.T"
-data = yf.Ticker(ticker).history(period="30y", interval="1d", auto_adjust=False)
-print(data)
+data = fetch_yfinance_data(ticker, period="30y", interval="1d", auto_adjust=True)
 data = data[["Open", "High", "Low", "Close", "Volume"]]
-print(data)
-
 data.index = pd.to_datetime(data.index)
-print(data)
-
 data = data.sort_index()
-print(data)
-
 
 # 特徴量生成
 data = add_all_ta_features(data, open="Open", high="High", low="Low", close="Close", volume="Volume")
-print("Infinite values after TA:", np.isinf(data).sum().sum())
-print("Columns with inf:", np.isinf(data).sum()[np.isinf(data).sum() > 0])
 data = data.replace([np.inf, -np.inf], np.nan).fillna(data.mean())
 
 # ラグ特徴量
@@ -44,8 +57,8 @@ for window in [5, 10, 20]:
     stat_features[f"Volume_mean_{window}"] = data["Volume"].rolling(window=window).mean()
 stat_df = pd.DataFrame(stat_features, index=data.index)
 
-# 寄り/引け特徴量（先にラグ特徴量や統計量が必要なものを計算）
-data = pd.concat([data, lag_df, stat_df], axis=1)  # ここで結合
+# 寄り/引け特徴量
+data = pd.concat([data, lag_df, stat_df], axis=1)
 data = data.replace([np.inf, -np.inf], np.nan).fillna(data.mean())
 
 open_close_features = {
@@ -58,7 +71,7 @@ open_close_features = {
 }
 open_close_df = pd.DataFrame(open_close_features, index=data.index)
 
-# 特徴量合成（先にラグ特徴量が必要）
+# 特徴量合成
 synth_features = {
     "Close_lag_1_plus_Volume_lag_1": np.clip(data["Close_lag_1"] + data["Volume_lag_1"], -1e6, 1e6),
     "Close_lag_1_div_Volume_lag_1": np.clip(data["Close_lag_1"] / data["Volume_lag_1"].replace(0, np.nan), -1e6, 1e6),
@@ -92,25 +105,22 @@ cat_df = pd.DataFrame(cat_features, index=data.index)
 # センチメント（ダミー）
 sentiment = pd.Series(np.random.uniform(-1, 1, len(data)), index=data.index, name="sentiment")
 
-# 全ての特徴量を一度に結合
+# 全ての特徴量を結合
 data = pd.concat([data, open_close_df, synth_df, imbalance_df, cat_df, sentiment], axis=1)
-data = data.replace([np.inf, -np.inf], np.nan).fillna(data.mean())
-
-# 無限大チェック
-print("Infinite values in data:", np.isinf(data).sum().sum())
-print("Columns with inf:", np.isinf(data).sum()[np.isinf(data).sum() > 0])
 data = data.replace([np.inf, -np.inf], np.nan).fillna(data.mean())
 
 # 特徴量リスト
 columns_to_drop = ["Close", "Open", "High", "Low", "Volume"]
 features = data.drop(columns=[col for col in columns_to_drop if col in data.columns]).columns
-print(f"Total features: {len(features)}")
 
-# ターゲット（i+1～i+5の終値）
+# ターゲット（Close_i+5のみ）
 y = pd.DataFrame({
-    f"Close_i+{k}": data["Close"].shift(-k) for k in range(1, 6)
+    "Close_i+5": data["Close"].shift(-5)
 }).dropna()
 X = data[features].loc[y.index].fillna(data.mean())
+
+# Close_current（現在の終値）
+Close_current = data["Close"].loc[X.index]
 
 # カテゴリカル特徴量を分離
 cat_columns = ["hour", "day_of_week", "is_opening", "is_closing"]
@@ -129,28 +139,27 @@ X_num = pd.DataFrame(X_num_scaled, index=index, columns=columns)
 # カテゴリカル特徴量を結合
 X = pd.concat([X_num, X_cat], axis=1)
 
-# ターゲットの正規化（列ごとに）
-scalers_y = {k: StandardScaler() for k in range(1, 6)}
-y_scaled = y.copy()
-for k in range(1, 6):
-    col = f"Close_i+{k}"
-    y_scaled[col] = scalers_y[k].fit_transform(y[[col]])
-y = y_scaled
+# ターゲットの正規化
+scaler_y = StandardScaler()
+y_scaled = scaler_y.fit_transform(y[["Close_i+5"]])
+y_scaled = pd.DataFrame(y_scaled, index=y.index, columns=["Close_i+5"])
 
-# カテゴリカル変数の処理（LSTM用）
-X_lstm = pd.get_dummies(X, columns=cat_columns, drop_first=True)
-columns_lstm = X_lstm.columns
-X_lstm = np.nan_to_num(X_lstm, nan=0, posinf=1e6, neginf=-1e6)
-features_lstm = columns_lstm
+# カテゴリカル変数の処理（GRU用）
+X_gru = pd.get_dummies(X, columns=cat_columns, drop_first=True)
+columns_gru = X_gru.columns
+X_gru = np.nan_to_num(X_gru, nan=0, posinf=1e6, neginf=-1e6)
+features_gru = columns_gru
 
 # データ保存
 data_dict = {
     "X": X,
-    "y": y,
-    "X_lstm": X_lstm,
-    "y_scaled": y_scaled,
-    "scalers_y": scalers_y,
+    "y": y_scaled,
+    "y_orig": y,
+    "X_gru": X_gru,
+    "scaler_X": scaler_X,
+    "scaler_y": scaler_y,
     "features": features,
-    "features_lstm": features_lstm
+    "features_gru": features_gru,
+    "Close_current": Close_current
 }
 pd.to_pickle(data_dict, "data/processed_data.pkl")
