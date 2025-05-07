@@ -46,7 +46,7 @@ for train_idx, test_idx in tscv.split(X):
     
     # スケール戻し
     y_pred_orig = scaler_y.inverse_transform(y_pred.reshape(-1, 1)).flatten()
-    y_pred_orig = np.clip(y_pred_orig, 2000, 3000)
+    y_pred_orig = np.clip(y_pred_orig, 500, 5000)  # トヨタ株価の範囲を考慮
     
     # メトリクス計算
     rmse = mean_squared_error(y_test_orig, y_pred_orig, squared=False)

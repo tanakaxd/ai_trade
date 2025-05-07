@@ -1,22 +1,29 @@
 import pandas as pd
 import numpy as np
-from ta import add_all_ta_features
-from sklearn.preprocessing import StandardScaler
-import os
 import yfinance as yf
 import time
 from yfinance.exceptions import YFRateLimitError
+import os
+from ta.trend import SMAIndicator, MACD, EMAIndicator
+from ta.momentum import RSIIndicator, StochasticOscillator
+from ta.volatility import BollingerBands, AverageTrueRange, KeltnerChannel
+from ta.volume import OnBalanceVolumeIndicator, VolumeWeightedAveragePrice
 
 # ディレクトリ作成
 os.makedirs("data", exist_ok=True)
 
 # データ取得（yfinance）
-def fetch_yfinance_data(ticker, period="30y", interval="1d", auto_adjust=True, retries=3, wait_time=5):
+def fetch_yfinance_data(ticker, period="30y", interval="1d", auto_adjust=True, retries=3, wait_time=5, cache_file="data/raw_data.csv"):
+    if os.path.exists(cache_file):
+        print(f"Loading cached data from {cache_file}")
+        data = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+        return data
     for attempt in range(retries):
         try:
             data = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=auto_adjust)
             if data.empty:
                 raise ValueError(f"No data retrieved for ticker {ticker}")
+            data.to_csv(cache_file)
             return data
         except YFRateLimitError:
             if attempt < retries - 1:
@@ -31,69 +38,121 @@ def fetch_yfinance_data(ticker, period="30y", interval="1d", auto_adjust=True, r
             else:
                 raise Exception(f"Failed to fetch data for {ticker} after {retries} attempts: {e}")
 
-ticker = "9432.T"
+ticker = "7203.T"
 data = fetch_yfinance_data(ticker, period="30y", interval="1d", auto_adjust=True)
 data = data[["Open", "High", "Low", "Close", "Volume"]]
 data.index = pd.to_datetime(data.index)
 data = data.sort_index()
 
-# 特徴量生成
-data = add_all_ta_features(data, open="Open", high="High", low="Low", close="Close", volume="Volume")
-data = data.replace([np.inf, -np.inf], np.nan).fillna(data.mean())
+# 特徴量生成（100を超えるように拡張）
+# 1. トレンド指標
+sma_fast = SMAIndicator(data["Close"], window=5).sma_indicator()
+sma_slow = SMAIndicator(data["Close"], window=20).sma_indicator()
+ema_fast = EMAIndicator(data["Close"], window=5).ema_indicator()
+ema_slow = EMAIndicator(data["Close"], window=20).ema_indicator()
+macd = MACD(data["Close"])
+macd_val = macd.macd()
+macd_signal = macd.macd_signal()
+macd_diff = macd.macd_diff()
 
-# ラグ特徴量
+# 2. モメンタム指標
+rsi = RSIIndicator(data["Close"], window=14).rsi()
+stoch = StochasticOscillator(data["High"], data["Low"], data["Close"], window=14, smooth_window=3)
+stoch_k = stoch.stoch()
+stoch_d = stoch.stoch_signal()
+
+# 3. ボラティリティ指標
+bb = BollingerBands(data["Close"], window=20)
+bb_high = bb.bollinger_hband()
+bb_low = bb.bollinger_lband()
+bb_width = bb.bollinger_wband()
+atr = AverageTrueRange(data["High"], data["Low"], data["Close"], window=14).average_true_range()
+kc = KeltnerChannel(data["High"], data["Low"], data["Close"], window=20)
+kc_high = kc.keltner_channel_hband()
+kc_low = kc.keltner_channel_lband()
+kc_width = kc_high - kc_low
+
+# 4. ボリューム指標
+obv = OnBalanceVolumeIndicator(data["Close"], data["Volume"]).on_balance_volume()
+vwap = VolumeWeightedAveragePrice(data["High"], data["Low"], data["Close"], data["Volume"], window=14).volume_weighted_average_price()
+
+# データに追加
+data["sma_fast"] = sma_fast
+data["sma_slow"] = sma_slow
+data["ema_fast"] = ema_fast
+data["ema_slow"] = ema_slow
+data["macd"] = macd_val
+data["macd_signal"] = macd_signal
+data["macd_diff"] = macd_diff
+data["rsi"] = rsi
+data["stoch_k"] = stoch_k
+data["stoch_d"] = stoch_d
+data["bb_high"] = bb_high
+data["bb_low"] = bb_low
+data["bb_width"] = bb_width
+data["atr"] = atr
+data["kc_high"] = kc_high
+data["kc_low"] = kc_low
+data["kc_width"] = kc_width
+data["obv"] = obv
+data["vwap"] = vwap
+
+# 5. ラグ特徴量（拡張）
 lag_features = {}
-for lag in [1, 5, 10]:
+for lag in [1, 3, 5, 10, 15, 20, 30]:
     lag_features[f"Close_lag_{lag}"] = data["Close"].shift(lag)
     lag_features[f"Volume_lag_{lag}"] = data["Volume"].shift(lag)
     lag_features[f"Close_pct_change_{lag}"] = data["Close"].pct_change(periods=lag)
 lag_df = pd.DataFrame(lag_features, index=data.index)
 
-# 統計量
+# 6. 統計量（拡張）
 stat_features = {}
-for window in [5, 10, 20]:
+for window in [5, 10, 20, 30, 50, 100]:
     stat_features[f"Close_mean_{window}"] = data["Close"].rolling(window=window).mean()
     stat_features[f"Close_std_{window}"] = data["Close"].rolling(window=window).std()
     stat_features[f"Volume_mean_{window}"] = data["Volume"].rolling(window=window).mean()
 stat_df = pd.DataFrame(stat_features, index=data.index)
 
-# 寄り/引け特徴量
+# ラグ特徴量と統計量を先に結合
 data = pd.concat([data, lag_df, stat_df], axis=1)
-data = data.replace([np.inf, -np.inf], np.nan).fillna(data.mean())
 
+# 7. 寄り/引け特徴量
 open_close_features = {
     "Open_to_prev_close": data["Open"] - data["Close"].shift(1),
-    "Open_to_sma5": data["Open"] - data["trend_sma_fast"],
+    "Open_to_sma5": data["Open"] - data["sma_fast"],
     "Open_volatility": data["Open"].rolling(window=5).std(),
-    "Close_to_sma5": data["Close"] - data["trend_sma_fast"],
-    "Close_to_vwap": data["Close"] - data["volume_vwap"],
+    "Close_to_sma5": data["Close"] - data["sma_fast"],
+    "Close_to_vwap": data["Close"] - data["vwap"],
     "Close_volatility": data["Close"].rolling(window=5).std()
 }
 open_close_df = pd.DataFrame(open_close_features, index=data.index)
 
-# 特徴量合成
+# 8. 特徴量合成（拡張）
 synth_features = {
-    "Close_lag_1_plus_Volume_lag_1": np.clip(data["Close_lag_1"] + data["Volume_lag_1"], -1e6, 1e6),
-    "Close_lag_1_div_Volume_lag_1": np.clip(data["Close_lag_1"] / data["Volume_lag_1"].replace(0, np.nan), -1e6, 1e6),
-    "RSI_minus_MACD": np.clip(data["momentum_rsi"] - data["trend_macd"], -1e6, 1e6),
-    "Close_mean_5_plus_BBW": np.clip(data["Close_mean_5"] + data["volatility_bbw"], -1e6, 1e6),
-    "Close_lag_5_div_SMA5": np.clip(data["Close_lag_5"] / data["trend_sma_fast"].replace(0, np.nan), -1e6, 1e6),
-    "Close_lag_1_times_Volume_lag_1": np.clip(data["Close_lag_1"] * data["Volume_lag_1"], -1e6, 1e6)
+    "Close_lag_1_plus_Volume_lag_1": data["Close_lag_1"] + data["Volume_lag_1"],
+    "Close_lag_1_div_Volume_lag_1": data["Close_lag_1"] / data["Volume_lag_1"].replace(0, np.nan),
+    "RSI_minus_MACD": data["rsi"] - data["macd"],
+    "Close_mean_5_plus_BBW": data["Close_mean_5"] + data["bb_width"],
+    "Close_lag_5_div_SMA5": data["Close_lag_5"] / data["sma_fast"].replace(0, np.nan),
+    "Close_lag_1_times_Volume_lag_1": data["Close_lag_1"] * data["Volume_lag_1"],
+    "Close_lag_3_div_Volume_lag_3": data["Close_lag_3"] / data["Volume_lag_3"].replace(0, np.nan),
+    "RSI_plus_MACD": data["rsi"] + data["macd"],
+    "BBW_times_VWAP": data["bb_width"] * data["vwap"]
 }
 synth_df = pd.DataFrame(synth_features, index=data.index)
 
-# 乖離/インバランス
+# 9. 乖離/インバランス
 imbalance_features = {
     "Close_Open_diff": data["Close"] - data["Open"],
     "High_Low_diff": data["High"] - data["Low"],
-    "Close_SMA5_diff": data["Close"] - data["trend_sma_fast"],
-    "Buy_Sell_Imbalance": np.clip((data["Close"] - data["Open"]) / (data["High"] - data["Low"]).replace(0, np.nan), -1e6, 1e6),
-    "Volume_Imbalance": np.clip(data["Volume"] / data["Volume_mean_5"], -1e6, 1e6),
-    "RSI_MACD_Imbalance": np.clip(data["momentum_rsi"] / data["trend_macd"].replace(0, np.nan), -1e6, 1e6)
+    "Close_SMA5_diff": data["Close"] - data["sma_fast"],
+    "Buy_Sell_Imbalance": (data["Close"] - data["Open"]) / (data["High"] - data["Low"]).replace(0, np.nan),
+    "Volume_Imbalance": data["Volume"] / data["Volume_mean_5"],
+    "RSI_MACD_Imbalance": data["rsi"] / data["macd"].replace(0, np.nan)
 }
 imbalance_df = pd.DataFrame(imbalance_features, index=data.index)
 
-# カテゴリカル変数
+# 10. カテゴリカル変数
 cat_features = {
     "hour": data.index.hour,
     "day_of_week": data.index.dayofweek,
@@ -102,64 +161,37 @@ cat_features = {
 }
 cat_df = pd.DataFrame(cat_features, index=data.index)
 
-# センチメント（ダミー）
+# 11. センチメント（ダミー）
 sentiment = pd.Series(np.random.uniform(-1, 1, len(data)), index=data.index, name="sentiment")
 
 # 全ての特徴量を結合
 data = pd.concat([data, open_close_df, synth_df, imbalance_df, cat_df, sentiment], axis=1)
-data = data.replace([np.inf, -np.inf], np.nan).fillna(data.mean())
 
-# 特徴量リスト
-columns_to_drop = ["Close", "Open", "High", "Low", "Volume"]
-features = data.drop(columns=[col for col in columns_to_drop if col in data.columns]).columns
+# 異常値チェックと処理
+data = data.replace([np.inf, -np.inf], np.nan)
+data = data.iloc[100:]  # 初期100レコードをカット
+data = data.fillna(method="ffill")  # 前方補完
 
-# ターゲット（Close_i+5のみ）
-y = pd.DataFrame({
-    "Close_i+5": data["Close"].shift(-5)
-}).dropna()
-X = data[features].loc[y.index].fillna(data.mean())
+# 特徴量リスト（入力価格データを除外）
+columns_to_drop = ["Open", "High", "Low", "Close", "Volume"]
+features = data.drop(columns=columns_to_drop).columns
+print(f"Total features generated: {len(features)}")
 
-# Close_current（現在の終値）
+# ターゲット（Close_i+5）
+y = pd.DataFrame({"Close_i+5": data["Close"].shift(-5)}).dropna()
+X = data[features].loc[y.index]
+
+# 現在の終値
 Close_current = data["Close"].loc[X.index]
 
-# カテゴリカル特徴量を分離
-cat_columns = ["hour", "day_of_week", "is_opening", "is_closing"]
-X_cat = X[cat_columns]
-X_num = X.drop(columns=cat_columns)
-
-# 特徴量の正規化（数値特徴量のみ）
-scaler_X = StandardScaler()
-index = X_num.index
-columns = X_num.columns
-X_num = np.clip(X_num, -1e6, 1e6)
-X_num = np.nan_to_num(X_num, nan=0, posinf=1e6, neginf=-1e6)
-X_num_scaled = scaler_X.fit_transform(X_num)
-X_num = pd.DataFrame(X_num_scaled, index=index, columns=columns)
-
-# カテゴリカル特徴量を結合
-X = pd.concat([X_num, X_cat], axis=1)
-
-# ターゲットの正規化
-scaler_y = StandardScaler()
-y_scaled = scaler_y.fit_transform(y[["Close_i+5"]])
-y_scaled = pd.DataFrame(y_scaled, index=y.index, columns=["Close_i+5"])
-
-# カテゴリカル変数の処理（GRU用）
-X_gru = pd.get_dummies(X, columns=cat_columns, drop_first=True)
-columns_gru = X_gru.columns
-X_gru = np.nan_to_num(X_gru, nan=0, posinf=1e6, neginf=-1e6)
-features_gru = columns_gru
-
-# データ保存
+# データ保存（スケーリングなし）
 data_dict = {
     "X": X,
-    "y": y_scaled,
     "y_orig": y,
-    "X_gru": X_gru,
-    "scaler_X": scaler_X,
-    "scaler_y": scaler_y,
     "features": features,
-    "features_gru": features_gru,
     "Close_current": Close_current
 }
 pd.to_pickle(data_dict, "data/processed_data.pkl")
+
+print(data)
+data.to_csv("data/processed_data.csv")
