@@ -4,10 +4,11 @@ import yfinance as yf
 import time
 from yfinance.exceptions import YFRateLimitError
 import os
-from ta.trend import SMAIndicator, MACD, EMAIndicator
+from ta.trend import SMAIndicator, MACD, EMAIndicator, IchimokuIndicator, ADXIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.volatility import BollingerBands, AverageTrueRange, KeltnerChannel
 from ta.volume import OnBalanceVolumeIndicator, VolumeWeightedAveragePrice
+from ta.trend import CCIIndicator
 
 # ディレクトリ作成
 os.makedirs("data", exist_ok=True)
@@ -44,7 +45,10 @@ data = data[["Open", "High", "Low", "Close", "Volume"]]
 data.index = pd.to_datetime(data.index)
 data = data.sort_index()
 
-# 特徴量生成（100を超えるように拡張）
+# Volume=0のレコードを削除（休場日対応、特徴量計算前に実行）
+data = data[data["Volume"] != 0]
+
+# 特徴量生成
 # 1. トレンド指標
 sma_fast = SMAIndicator(data["Close"], window=5).sma_indicator()
 sma_slow = SMAIndicator(data["Close"], window=20).sma_indicator()
@@ -54,6 +58,24 @@ macd = MACD(data["Close"])
 macd_val = macd.macd()
 macd_signal = macd.macd_signal()
 macd_diff = macd.macd_diff()
+
+# 新規追加: 一目均衡表 (Ichimoku Cloud)
+ichimoku = IchimokuIndicator(high=data["High"], low=data["Low"], window1=9, window2=26, window3=52)
+ichimoku_base_line = ichimoku.ichimoku_base_line()  # 基準線
+ichimoku_conversion_line = ichimoku.ichimoku_conversion_line()  # 転換線
+ichimoku_a = ichimoku.ichimoku_a()  # 先行スパン1
+ichimoku_b = ichimoku.ichimoku_b()  # 先行スパン2
+ichimoku_lagging = data["Close"].shift(-26)  # 遅行スパン（taでは計算されないため手動で）
+
+# 新規追加: ADX (Average Directional Index)
+adx = ADXIndicator(high=data["High"], low=data["Low"], close=data["Close"], window=14)
+adx_val = adx.adx()
+adx_pos = adx.adx_pos()  # +DI
+adx_neg = adx.adx_neg()  # -DI
+
+# 新規追加: CCI (Commodity Channel Index)
+cci = CCIIndicator(high=data["High"], low=data["Low"], close=data["Close"], window=20)
+cci_val = cci.cci()
 
 # 2. モメンタム指標
 rsi = RSIIndicator(data["Close"], window=14).rsi()
@@ -84,6 +106,15 @@ data["ema_slow"] = ema_slow
 data["macd"] = macd_val
 data["macd_signal"] = macd_signal
 data["macd_diff"] = macd_diff
+data["ichimoku_base_line"] = ichimoku_base_line
+data["ichimoku_conversion_line"] = ichimoku_conversion_line
+data["ichimoku_a"] = ichimoku_a
+data["ichimoku_b"] = ichimoku_b
+data["ichimoku_lagging"] = ichimoku_lagging
+data["adx"] = adx_val
+data["adx_pos"] = adx_pos
+data["adx_neg"] = adx_neg
+data["cci"] = cci_val
 data["rsi"] = rsi
 data["stoch_k"] = stoch_k
 data["stoch_d"] = stoch_d
@@ -113,7 +144,7 @@ for window in [5, 10, 20, 30, 50, 100]:
     stat_features[f"Volume_mean_{window}"] = data["Volume"].rolling(window=window).mean()
 stat_df = pd.DataFrame(stat_features, index=data.index)
 
-# ラグ特徴量と統計量を先に結合
+# ラグ特徴量と統計量を結合
 data = pd.concat([data, lag_df, stat_df], axis=1)
 
 # 7. 寄り/引け特徴量
