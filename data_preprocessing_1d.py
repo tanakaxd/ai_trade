@@ -90,6 +90,7 @@ usd_jpy_features = {
     "USDJPY_pct_change": data["USDJPY_Close"].pct_change(),
     "USDJPY_sma5": data["USDJPY_Close"].rolling(window=5).mean(),
     "USDJPY_sma20": data["USDJPY_Close"].rolling(window=20).mean(),
+    "USDJPY_sma100": data["USDJPY_Close"].rolling(window=100).mean(),  # 新しい特徴量
     "USDJPY_atr": AverageTrueRange(data["USDJPY_High"], data["USDJPY_Low"], data["USDJPY_Close"], window=14).average_true_range(),
     "USDJPY_lag_1": data["USDJPY_Close"].shift(1),
     "USDJPY_lag_3": data["USDJPY_Close"].shift(3),
@@ -156,6 +157,7 @@ data["USDJPY_Low"] = data["USDJPY_Low"]
 data["USDJPY_pct_change"] = usd_jpy_df["USDJPY_pct_change"]
 data["USDJPY_sma5"] = usd_jpy_df["USDJPY_sma5"]
 data["USDJPY_sma20"] = usd_jpy_df["USDJPY_sma20"]
+data["USDJPY_sma100"] = usd_jpy_df["USDJPY_sma100"]  # 新しい特徴量
 data["USDJPY_atr"] = usd_jpy_df["USDJPY_atr"]
 data["USDJPY_lag_1"] = usd_jpy_df["USDJPY_lag_1"]
 data["USDJPY_lag_3"] = usd_jpy_df["USDJPY_lag_3"]
@@ -247,27 +249,38 @@ imbalance_features = {
 }
 imbalance_df = pd.DataFrame(imbalance_features, index=data.index)
 
-# 11. カテゴリカル変数
+# 11. カテゴリカル変数（is_earnings_day と days_until_next_earnings_cat を除外）
 cat_features = {
     "day_of_week": data.index.dayofweek,
     "month": data.index.month,
-    "quarter": ((data.index.month - 4) % 12 // 3) + 1,  # トヨタの3月期決算に基づく四半期
-    "is_month_end": (data.index.is_month_end).astype(int),
-    "is_earnings_day": data["is_earnings_day"],
-    "days_until_next_earnings_cat": data["days_until_next_earnings_cat"]
+    "quarter": ((data.index.month - 4) % 12 // 3) + 1,  # トヨタの3月期決算
+    "is_month_end": (data.index.is_month_end).astype(int)
 }
 cat_df = pd.DataFrame(cat_features, index=data.index)
 
-# 12. センチメント（ダミー）
-sentiment = pd.Series(np.random.uniform(-1, 1, len(data)), index=data.index, name="sentiment")
+# カテゴリカル変数のリスト
+cat_columns = ["day_of_week", "month", "quarter", "is_month_end", "is_earnings_day", "days_until_next_earnings_cat"]
+
+# 結合前の列名衝突チェック
+existing_columns = data.columns
+new_columns = cat_df.columns
+conflicting_columns = [col for col in new_columns if col in existing_columns]
+if conflicting_columns:
+    print(f"Warning: Potential column conflicts before concat: {conflicting_columns}")
 
 # 全ての特徴量を結合
-data = pd.concat([data, open_close_df, synth_df, imbalance_df, cat_df, sentiment], axis=1)
+data = pd.concat([data, open_close_df, synth_df, imbalance_df, cat_df], axis=1)
+
+# 結合後の重複列チェック
+duplicated_columns = data.columns[data.columns.duplicated()].tolist()
+if duplicated_columns:
+    print(f"Warning: Duplicated columns found: {duplicated_columns}")
+    data = data.loc[:, ~data.columns.duplicated(keep='first')]
+    print("Duplicated columns removed.")
 
 # 異常値チェックと処理
 data = data.replace([np.inf, -np.inf], np.nan)
 data = data.iloc[100:]  # 初期100レコードをカット
-data = data.iloc[3:]  # 存在する決算日データスパンの都合上初期3レコードをカット
 data = data.fillna(method="ffill")  # 前方補完（USD/JPY の欠損値も補完）
 
 # 特徴量リスト（入力価格データとUSD/JPY生データを除外）
@@ -287,7 +300,8 @@ data_dict = {
     "X": X,
     "y_orig": y,
     "features": features,
-    "Close_current": Close_current
+    "Close_current": Close_current,
+    "cat_columns": cat_columns  # カテゴリカル変数のリストを保存
 }
 pd.to_pickle(data_dict, "data/processed_data_1d.pkl")
 
