@@ -90,7 +90,11 @@ usd_jpy_features = {
     "USDJPY_pct_change": data["USDJPY_Close"].pct_change(),
     "USDJPY_sma5": data["USDJPY_Close"].rolling(window=5).mean(),
     "USDJPY_sma20": data["USDJPY_Close"].rolling(window=20).mean(),
-    "USDJPY_sma100": data["USDJPY_Close"].rolling(window=100).mean(),  # 新しい特徴量
+    "USDJPY_sma100": data["USDJPY_Close"].rolling(window=100).mean(),
+    "USDJPY_std_10": data["USDJPY_Close"].rolling(window=10).std(),  # 新しい特徴量
+    "USDJPY_std_20": data["USDJPY_Close"].rolling(window=20).std(),  # 既存
+    "USDJPY_std_50": data["USDJPY_Close"].rolling(window=50).std(),  # 新しい特徴量
+    "USDJPY_std_100": data["USDJPY_Close"].rolling(window=100).std(),  # 新しい特徴量
     "USDJPY_atr": AverageTrueRange(data["USDJPY_High"], data["USDJPY_Low"], data["USDJPY_Close"], window=14).average_true_range(),
     "USDJPY_lag_1": data["USDJPY_Close"].shift(1),
     "USDJPY_lag_3": data["USDJPY_Close"].shift(3),
@@ -157,7 +161,11 @@ data["USDJPY_Low"] = data["USDJPY_Low"]
 data["USDJPY_pct_change"] = usd_jpy_df["USDJPY_pct_change"]
 data["USDJPY_sma5"] = usd_jpy_df["USDJPY_sma5"]
 data["USDJPY_sma20"] = usd_jpy_df["USDJPY_sma20"]
-data["USDJPY_sma100"] = usd_jpy_df["USDJPY_sma100"]  # 新しい特徴量
+data["USDJPY_sma100"] = usd_jpy_df["USDJPY_sma100"]
+data["USDJPY_std_10"] = usd_jpy_df["USDJPY_std_10"]
+data["USDJPY_std_20"] = usd_jpy_df["USDJPY_std_20"]
+data["USDJPY_std_50"] = usd_jpy_df["USDJPY_std_50"]
+data["USDJPY_std_100"] = usd_jpy_df["USDJPY_std_100"]
 data["USDJPY_atr"] = usd_jpy_df["USDJPY_atr"]
 data["USDJPY_lag_1"] = usd_jpy_df["USDJPY_lag_1"]
 data["USDJPY_lag_3"] = usd_jpy_df["USDJPY_lag_3"]
@@ -210,7 +218,7 @@ for window in [5, 10, 20, 30, 50, 100]:
     stat_features[f"Volume_mean_{window}"] = data["Volume"].rolling(window=window).mean()
 stat_df = pd.DataFrame(stat_features, index=data.index)
 
-# ラグ特徴量と統計量を結合
+# ラグ特徴量と統計量を先に結合
 data = pd.concat([data, lag_df, stat_df], axis=1)
 
 # 8. 寄り/引け特徴量
@@ -249,7 +257,7 @@ imbalance_features = {
 }
 imbalance_df = pd.DataFrame(imbalance_features, index=data.index)
 
-# 11. カテゴリカル変数（is_earnings_day と days_until_next_earnings_cat を除外）
+# 11. カテゴリカル変数
 cat_features = {
     "day_of_week": data.index.dayofweek,
     "month": data.index.month,
@@ -268,7 +276,7 @@ conflicting_columns = [col for col in new_columns if col in existing_columns]
 if conflicting_columns:
     print(f"Warning: Potential column conflicts before concat: {conflicting_columns}")
 
-# 全ての特徴量を結合
+# 残りの特徴量を結合
 data = pd.concat([data, open_close_df, synth_df, imbalance_df, cat_df], axis=1)
 
 # 結合後の重複列チェック
@@ -280,7 +288,7 @@ if duplicated_columns:
 
 # 異常値チェックと処理
 data = data.replace([np.inf, -np.inf], np.nan)
-data = data.iloc[100:]  # 初期100レコードをカット
+data = data.iloc[103:]  # 初期103レコードをカット（ユーザーの要望）
 data = data.fillna(method="ffill")  # 前方補完（USD/JPY の欠損値も補完）
 
 # 特徴量リスト（入力価格データとUSD/JPY生データを除外）
@@ -288,11 +296,13 @@ columns_to_drop = ["Open", "High", "Low", "Close", "Volume", "USDJPY_Close", "US
 features = data.drop(columns=columns_to_drop).columns
 print(f"Total features generated: {len(features)}")
 
-# ターゲット（Close_i+5）
-y = pd.DataFrame({"Close_i+5": data["Close"].shift(-5)}).dropna()
+# ターゲット（Close_i+5 の相対変化）
+y = pd.DataFrame({
+    "Close_i+5_ratio": data["Close"].shift(-5) / data["Close"]  # Close_i+5 / Close_current
+}).dropna()
 X = data[features].loc[y.index]
 
-# 現在の終値
+# 現在の終値（後で予測値を絶対値に戻す用）
 Close_current = data["Close"].loc[X.index]
 
 # データ保存（スケーリングなし）
@@ -301,7 +311,7 @@ data_dict = {
     "y_orig": y,
     "features": features,
     "Close_current": Close_current,
-    "cat_columns": cat_columns  # カテゴリカル変数のリストを保存
+    "cat_columns": cat_columns
 }
 pd.to_pickle(data_dict, "data/processed_data_1d.pkl")
 
