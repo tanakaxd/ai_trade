@@ -56,6 +56,7 @@ plt.close()
 tscv = TimeSeriesSplit(n_splits=5)
 metrics = []
 rmses, maes, mapes = [], [], []
+all_predictions = []
 
 for fold, (train_idx, test_idx) in enumerate(tscv.split(X), 1):
     X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
@@ -99,6 +100,15 @@ for fold, (train_idx, test_idx) in enumerate(tscv.split(X), 1):
     mapes.append(mape)
     print(f"Fold {fold} - RMSE: {rmse}, MAE: {mae}, MAPE: {mape}%")
     
+    # 予測結果を保存
+    fold_predictions = pd.DataFrame({
+        "Timestamp": test_dates,
+        "Actual_Close_i+5": y_test_orig,
+        "Predicted_Close_i+5": y_pred_orig,
+        "Close_current": Close_current_test
+    })
+    all_predictions.append(fold_predictions)
+    
     # 予測プロット
     plt.figure(figsize=(12, 6))
     plt.plot(test_dates, y_test_orig, label="Actual Close_i+5", color="blue")
@@ -109,6 +119,22 @@ for fold, (train_idx, test_idx) in enumerate(tscv.split(X), 1):
     plt.legend()
     plt.grid()
     plt.savefig(f"output/fold{fold}_predictions_vs_actual.png")
+    plt.close()
+    
+    # 補足プロット：5日ずらしてプロット
+    plt.figure(figsize=(12, 6))
+    plt.plot(test_dates, Close_current_test, label="Close_current", color="green")
+    # Actual Close_i+5 を5日ずらしてプロット（本来の日付に合わせる）
+    shifted_dates = test_dates[5:]  # 5日後の日付
+    shifted_actual = y_test_orig[:-5]  # 5日ずらした実際の値
+    plt.plot(shifted_dates, shifted_actual, label="Actual Close_i+5 (Shifted)", color="blue")
+    plt.plot(test_dates, y_pred_orig, label="Predicted Close_i+5", color="orange", linestyle="--")
+    plt.title(f"Fold {fold}: Close_current, Actual Close_i+5 (Shifted), and Predicted Close_i+5")
+    plt.xlabel("Date")
+    plt.ylabel("Price")
+    plt.legend()
+    plt.grid()
+    plt.savefig(f"output/fold{fold}_shifted_predictions.png")
     plt.close()
     
     # 誤差プロット
@@ -138,6 +164,10 @@ for fold, (train_idx, test_idx) in enumerate(tscv.split(X), 1):
         plt.grid()
         plt.savefig("output/fold5_test_plot.png")
         plt.close()
+
+# 予測結果をCSVに保存
+predictions_df = pd.concat(all_predictions, ignore_index=True)
+predictions_df.to_csv("output/predictions.csv", index=False)
 
 # モデル保存
 joblib.dump(model, "model/LightGBM_20250508/model_i+5.joblib")
